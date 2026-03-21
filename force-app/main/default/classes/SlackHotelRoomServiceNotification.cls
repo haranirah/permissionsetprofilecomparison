@@ -1,6 +1,6 @@
 public with sharing class SlackHotelRoomServiceNotification {
     
-    private static final String SLACK_BOT_TOKEN = 'xoxb-9210374808119-9226429963255-QOyI1lnDw9N8y5CBb4yPqawg'; // Replace with actual token
+    private static final String SLACK_BOT_TOKEN = ''; // Replace with actual token
     private static final String SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
 
     public class SlackInput {
