@@ -1,4 +1,4 @@
-name: Compare Profile & PermissionSet (FREE AI)
+name: Compare Specific Profile/PermissionSet (AI)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,9 @@ on:
         description: "Enter branch name"
         required: true
         default: "main"
+      metadataName:
+        description: "Enter Profile or PermissionSet name"
+        required: true
 
 jobs:
   compare:
@@ -19,35 +22,59 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Install SFDX
-      - name: Install SFDX
+      # 2. Install Salesforce CLI
+      - name: Install CLI
         run: npm install -g sfdx-cli
 
-      # 3. Authenticate Org
-      - name: Auth Org
+      # 3. Authenticate Org using Auth URL
+      - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
-          sfdx auth:sfdxurl:store -f auth.txt -a targetOrg
+          sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 4. Retrieve ONLY Profiles & Permission Sets
+      # 4. Retrieve ONLY selected Profile or Permission Set
       - name: Retrieve Metadata
         run: |
-          sfdx force:source:retrieve -x manifest/package.xml -u targetOrg
+          NAME="${{ github.event.inputs.metadataName }}"
 
-      # 5. Compare only profile & permission set folder
+          echo "Retrieving Profile..."
+          sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
+
+          echo "Retrieving Permission Set..."
+          sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
+
+      # 5. Detect correct file path
+      - name: Locate Metadata File
+        run: |
+          NAME="${{ github.event.inputs.metadataName }}"
+
+          PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
+          PS_PATH="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
+
+          if [ -f "$PROFILE_PATH" ]; then
+            echo "FILE_PATH=$PROFILE_PATH" >> $GITHUB_ENV
+          elif [ -f "$PS_PATH" ]; then
+            echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
+          else
+            echo "File not found!"
+            exit 1
+          fi
+
+      # 6. Generate Diff
       - name: Generate Diff
-      - run: |
+        run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
-          git diff force-app/main/default/profiles force-app/main/default/permissionsets > diff.txt
-          echo "==== DIFF ===="
+          git diff $FILE_PATH > diff.txt
+
+          echo "==== RAW DIFF ===="
           cat diff.txt
 
-      # 6. Trim diff
+      # 7. Trim Diff (for AI limit)
       - name: Trim Diff
         run: |
           head -c 12000 diff.txt > trimmed-diff.txt
 
-      # 7. AI Summary (FREE)
+      # 8. AI Summary (FREE - OpenRouter)
       - name: AI Summary
         run: |
           DIFF_CONTENT=$(cat trimmed-diff.txt)
@@ -60,7 +87,7 @@ jobs:
               \"messages\": [
                 {
                   \"role\": \"system\",
-                  \"content\": \"Summarize profile and permission set changes. Highlight access changes and risks.\"
+                  \"content\": \"You are a Salesforce expert. Summarize only important changes in profile or permission set. Focus on field access, object access, and risks.\"
                 },
                 {
                   \"role\": \"user\",
@@ -69,14 +96,15 @@ jobs:
               ]
             }" > ai-response.json
 
-      # 8. Extract summary
+      # 9. Extract AI Summary
       - name: Extract Summary
         run: |
           cat ai-response.json | jq -r '.choices[0].message.content' > summary.txt
+
           echo "==== AI SUMMARY ===="
           cat summary.txt
 
-      # 9. Upload summary
+      # 10. Upload Result
       - name: Upload Summary
         uses: actions/upload-artifact@v3
         with:
