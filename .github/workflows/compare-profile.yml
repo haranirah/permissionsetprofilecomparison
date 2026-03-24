@@ -18,19 +18,26 @@ jobs:
     steps:
       # 1. Checkout selected branch
       - name: Checkout Branch
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
+      # 1.5 Setup Node.js (THIS IS THE FIX)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Standard LTS version
+
       # 2. Install Salesforce CLI
       - name: Install CLI
-        run: npm install -g sfdx-cli
+        run: npm install -g @salesforce/cli
 
       # 3. Authenticate Org using Auth URL
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
+
 
       # 4. Retrieve ONLY selected Profile or Permission Set
       - name: Retrieve Metadata
@@ -43,7 +50,7 @@ jobs:
           echo "Retrieving Permission Set..."
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 5. Detect correct file path
+      # 5. Detect correct file path (Added quotes for safety)
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -56,50 +63,57 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found!"
+            echo "File not found! It may not exist in the org."
             exit 1
           fi
 
-      # 6. Generate Diff
+      # 6. Generate Diff (Fixed untracked file edge-case)
       - name: Generate Diff
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
-          git diff $FILE_PATH > diff.txt
+          
+          # Force git to track the file if it was just downloaded and didn't exist in the branch
+          git add -N "$FILE_PATH" || true
+          git diff "$FILE_PATH" > diff.txt
 
           echo "==== RAW DIFF ===="
           cat diff.txt
 
-      # 7. Trim Diff (for AI limit)
+      # 7. Trim Diff (for AI context limit)
       - name: Trim Diff
         run: |
           head -c 12000 diff.txt > trimmed-diff.txt
 
-      # 8. AI Summary (FREE - OpenRouter)
+      # 8. AI Summary (Fixed JSON payload escaping using jq)
       - name: AI Summary
         run: |
-          DIFF_CONTENT=$(cat trimmed-diff.txt)
+          # Safely construct the JSON payload. jq ensures newlines and quotes in the diff don't break the JSON.
+          jq -n \
+            --arg diff "$(cat trimmed-diff.txt)" \
+            '{
+              "model": "mistralai/mistral-7b-instruct:free",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are a Salesforce expert. Summarize only important changes in profile or permission set. Focus on field access, object access, and risks."
+                },
+                {
+                  "role": "user",
+                  "content": ("Here is the diff:\n" + $diff)
+                }
+              ]
+            }' > payload.json
 
           curl https://openrouter.ai/api/v1/chat/completions \
             -H "Authorization: Bearer ${{ secrets.OPENROUTER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"model\": \"mistralai/mistral-7b-instruct:free\",
-              \"messages\": [
-                {
-                  \"role\": \"system\",
-                  \"content\": \"You are a Salesforce expert. Summarize only important changes in profile or permission set. Focus on field access, object access, and risks.\"
-                },
-                {
-                  \"role\": \"user\",
-                  \"content\": \"Here is the diff:\\n$DIFF_CONTENT\"
-                }
-              ]
-            }" > ai-response.json
+            -d @payload.json > ai-response.json
 
-      # 9. Extract AI Summary
+      # 9. Extract AI Summary (Added error fallback handling)
       - name: Extract Summary
         run: |
-          cat ai-response.json | jq -r '.choices[0].message.content' > summary.txt
+          # If the API hits a rate limit or errors out, this will catch the error message instead of failing silently.
+          cat ai-response.json | jq -r '.choices[0].message.content // .error.message // "Failed to parse AI response."' > summary.txt
 
           echo "==== AI SUMMARY ===="
           cat summary.txt
