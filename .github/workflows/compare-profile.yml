@@ -82,34 +82,29 @@ jobs:
           head -c 12000 diff.txt > trimmed-diff.txt
 
       # 9. AI Summary
+      # 8. AI Summary using NVIDIA Nemotron 3 Super
       - name: AI Summary
         run: |
           jq -n \
-           --arg diff "$(cat trimmed-diff.txt)" \
-           '{
-             "model": "google/gemma-7b-it:free",
+            --arg diff "$(cat trimmed-diff.txt)" \
+            '{
+              "model": "nvidia/nemotron-3-super-120b-a12b:free",
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce expert. Summarize only important changes in profile or permission set. Focus on field access, object access, and risks."
+                  "content": "You are a Salesforce Security Expert. Summarize the changes in this diff. Use a bold header if any permissions were DECREASED (Risk: Access Loss) or INCREASED (Risk: Over-privilege)."
                 },
                 {
                   "role": "user",
-                  "content": ("Here is the diff:\n" + $diff)
+                  "content": ("Review this Salesforce metadata diff:\n" + $diff)
                 }
               ]
             }' > payload.json
-
-          echo "==== PAYLOAD CREATED ===="
-          cat payload.json
 
           curl https://openrouter.ai/api/v1/chat/completions \
             -H "Authorization: Bearer ${{ secrets.OPENROUTER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
-
-          echo "==== AI RAW RESPONSE ===="
-          cat ai-response.json
 
       # 10. Extract Summary
       - name: Extract Summary
@@ -118,6 +113,9 @@ jobs:
 
           echo "==== AI SUMMARY ===="
           cat summary.txt
+
+          # THIS LINE PRINTS IT DIRECTLY TO THE GITHUB ACTION PAGE
+          cat summary.txt >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Result
       - name: Upload Summary
