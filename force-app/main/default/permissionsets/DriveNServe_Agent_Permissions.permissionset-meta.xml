@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Allows custom permissions for Agentforce Agent : DriveNServe_Agent&apos;s agent user : drivenserve_agent@00dgl000004gggv.ext.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>DriveNServe_Agent Permissio</label>
+    <license>Einstein Agent</license>
+</PermissionSet>
