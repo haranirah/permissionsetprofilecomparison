@@ -1,0 +1,84 @@
+name: Compare Profile & PermissionSet (FREE AI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Enter branch name"
+        required: true
+        default: "main"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout selected branch
+      - name: Checkout Branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      # 2. Install SFDX
+      - name: Install SFDX
+        run: npm install -g sfdx-cli
+
+      # 3. Authenticate Org
+      - name: Auth Org
+        run: |
+          echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
+          sfdx auth:sfdxurl:store -f auth.txt -a targetOrg
+
+      # 4. Retrieve ONLY Profiles & Permission Sets
+      - name: Retrieve Metadata
+        run: |
+          sfdx force:source:retrieve -x manifest/package.xml -u targetOrg
+
+      # 5. Compare only profile & permission set folder
+      - name: Generate Diff
+      - run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git diff force-app/main/default/profiles force-app/main/default/permissionsets > diff.txt
+          echo "==== DIFF ===="
+          cat diff.txt
+
+      # 6. Trim diff
+      - name: Trim Diff
+        run: |
+          head -c 12000 diff.txt > trimmed-diff.txt
+
+      # 7. AI Summary (FREE)
+      - name: AI Summary
+        run: |
+          DIFF_CONTENT=$(cat trimmed-diff.txt)
+
+          curl https://openrouter.ai/api/v1/chat/completions \
+            -H "Authorization: Bearer ${{ secrets.OPENROUTER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"mistralai/mistral-7b-instruct:free\",
+              \"messages\": [
+                {
+                  \"role\": \"system\",
+                  \"content\": \"Summarize profile and permission set changes. Highlight access changes and risks.\"
+                },
+                {
+                  \"role\": \"user\",
+                  \"content\": \"Here is the diff:\\n$DIFF_CONTENT\"
+                }
+              ]
+            }" > ai-response.json
+
+      # 8. Extract summary
+      - name: Extract Summary
+        run: |
+          cat ai-response.json | jq -r '.choices[0].message.content' > summary.txt
+          echo "==== AI SUMMARY ===="
+          cat summary.txt
+
+      # 9. Upload summary
+      - name: Upload Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: ai-summary
+          path: summary.txt
