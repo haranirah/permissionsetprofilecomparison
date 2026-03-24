@@ -85,9 +85,9 @@ jobs:
       - name: AI Summary
         run: |
           jq -n \
-            --arg diff "$(cat trimmed-diff.txt)" \
-            '{
-              "model": "mistralai/mistral-7b-instruct:free",
+           --arg diff "$(cat trimmed-diff.txt)" \
+           '{
+             "model": "google/gemma-7b-it:free",
               "messages": [
                 {
                   "role": "system",
