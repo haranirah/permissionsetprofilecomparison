@@ -16,13 +16,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout selected branch (Updated to v4)
+      # 1. Checkout selected branch
       - name: Checkout Branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Install Salesforce CLI (Updated to modern @salesforce/cli)
+      # 1.5 Setup Node.js (THIS IS THE FIX)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Standard LTS version
+
+      # 2. Install Salesforce CLI
       - name: Install CLI
         run: npm install -g @salesforce/cli
 
@@ -31,6 +37,7 @@ jobs:
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
+
 
       # 4. Retrieve ONLY selected Profile or Permission Set
       - name: Retrieve Metadata
