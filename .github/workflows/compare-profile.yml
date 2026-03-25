@@ -62,7 +62,7 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found! It may not exist in the org."
+            echo "File not found!"
             exit 1
           fi
 
@@ -76,26 +76,53 @@ jobs:
           echo "==== RAW DIFF ===="
           cat diff.txt
 
-      # 8. Trim Diff
-      - name: Trim Diff
+      # 8. Filter only important permission lines
+      - name: Filter Important Changes
         run: |
-          head -c 12000 diff.txt > trimmed-diff.txt
+          grep -E "allow(Create|Edit|Delete|Read)" diff.txt > filtered.txt || true
+          head -c 3000 filtered.txt > trimmed.txt
 
+          echo "==== FILTERED DIFF ===="
+          cat trimmed.txt
+
+      # 🔥 9. Convert to ORG ➜ BRANCH (LOGIC FIX - NO AI CONFUSION)
+      - name: Prepare Clean Data
+        run: |
+          awk '
+          /allow(Create|Edit|Delete|Read)/ {
+            if ($0 ~ /^\+/) {
+              org=$0
+              getline nextLine
+              if (nextLine ~ /^-/) {
+                branch=nextLine
+
+                gsub(/.*<|>.*/, "", org)
+                gsub(/.*<|>.*/, "", branch)
+
+                print org " ➜ " branch
+              }
+            }
+          }' diff.txt > clean.txt
+
+          echo "==== CLEAN DATA ===="
+          cat clean.txt
+
+      # 🤖 10. AI Formatting (ONLY FORMAT, NO LOGIC)
       - name: AI Summary
         run: |
           jq -n \
-            --arg diff "$(cat trimmed-diff.txt)" \
+            --arg diff "$(cat clean.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 400,
+              "max_tokens": 300,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce expert."
+                  "content": "Format Salesforce permission comparison."
                 },
                 {
                   "role": "user",
-                  "content": "This is a Salesforce metadata diff.\n\nIMPORTANT RULES:\n- '-' = BRANCH value\n- '+' = ORG value\n- Output must be: ORG ➜ BRANCH\n- Always show: (+ value ➜ - value)\n\nFORMAT:\n\nObject: <Object Name>\n- Create: false ➜ true\n- Edit: false ➜ true\n- Delete: false ➜ true\n\nOnly show changed values.\nKeep it clean and simple.\n\nDiff:\n\($diff)"
+                  "content": "Format this clean comparison:\n\nObject: Account\n- Create: false ➜ true\n- Edit: false ➜ true\n- Delete: false ➜ true\n\nKeep it simple and clean.\n\nData:\n\($diff)"
                 }
               ]
             }' > payload.json
@@ -105,18 +132,24 @@ jobs:
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 10. Extract Summary
+      # 11. Extract Summary (SAFE)
       - name: Extract Summary
         run: |
-          cat ai-response.json | jq -r '.choices[0].message.content // .error.message // "Failed to parse AI response."' > summary.txt
+          CONTENT=$(cat ai-response.json | jq -r '.choices[0].message.content // empty')
 
-          echo "==== AI SUMMARY ===="
+          if [ -z "$CONTENT" ]; then
+            echo "AI failed, showing raw response"
+            cat ai-response.json > summary.txt
+          else
+            echo "$CONTENT" > summary.txt
+          fi
+
+          echo "==== FINAL OUTPUT ===="
           cat summary.txt
 
-          # THIS LINE PRINTS IT DIRECTLY TO THE GITHUB ACTION PAGE
           cat summary.txt >> $GITHUB_STEP_SUMMARY
 
-      # 11. Upload Result
+      # 12. Upload Result
       - name: Upload Summary
         uses: actions/upload-artifact@v4
         with:
