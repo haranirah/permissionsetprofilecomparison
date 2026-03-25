@@ -43,10 +43,7 @@ jobs:
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
 
-          echo "Retrieving Profile..."
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
-
-          echo "Retrieving Permission Set..."
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
       # 6. Locate Metadata File
@@ -62,7 +59,7 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found! It may not exist in the org."
+            echo "File not found!"
             exit 1
           fi
 
@@ -73,29 +70,31 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-          echo "==== RAW DIFF ===="
-          cat diff.txt
-
-      # 8. Trim Diff
-      - name: Trim Diff
+      # 🔥 8. FILTER ONLY IMPORTANT PERMISSIONS (KEY CHANGE)
+      - name: Filter Important Changes
         run: |
-          head -c 12000 diff.txt > trimmed-diff.txt
+          grep -E "allow(Create|Edit|Delete|Read)" diff.txt > filtered.txt || true
+          head -c 5000 filtered.txt > trimmed.txt
 
-      # 9. AI Summary using Xiaomi MiMo-V2-Omni (Indentation Fixed)
+          echo "==== FILTERED DIFF ===="
+          cat trimmed.txt
+
+      # 🤖 9. AI SUMMARY (LOW TOKEN SAFE)
       - name: AI Summary
         run: |
           jq -n \
-            --arg diff "$(cat trimmed-diff.txt)" \
+            --arg diff "$(cat trimmed.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
+              "max_tokens": 600,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce expert. Convert metadata diff into a clean, structured comparison output."
+                  "content": "You are a Salesforce expert. Format permission changes clearly."
                 },
                 {
                   "role": "user",
-                  "content": "Analyze the Salesforce diff and present it in a clean and visually structured format.\n\nRules:\n- Show comparison first (clean and aligned)\n- Group by object\n- Highlight ONLY changed values\n- Use symbols: ➜ for change\n- Use simple words: Create, Edit, Delete, Read\n- Make it visually clean and easy to scan\n- No unnecessary explanation in comparison section\n\nThen add a small summary at the end.\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n\nObject: <Object Name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n  • Delete  : true ➜ false\n\n(only show changed ones)\n\n=== 📌 SUMMARY ===\n- 1–2 lines explaining what changed in simple words\n\n=== ⚠️ IMPACT ===\n- Short impact statement (1 line)\n\nDiff:\n\($diff)"
+                  "content": "Convert this into clean format:\n\n=== 🔍 PERMISSION CHANGES ===\nObject: <name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n\n=== 📌 SUMMARY ===\n1 short line\n\n=== ⚠️ IMPACT ===\n1 short line\n\nData:\n" + $diff
                 }
               ]
             }' > payload.json
@@ -108,12 +107,11 @@ jobs:
       # 10. Extract Summary
       - name: Extract Summary
         run: |
-          cat ai-response.json | jq -r '.choices[0].message.content // .error.message // "Failed to parse AI response."' > summary.txt
+          cat ai-response.json | jq -r '.choices[0].message.content // .error.message' > summary.txt
 
           echo "==== AI SUMMARY ===="
           cat summary.txt
 
-          # THIS LINE PRINTS IT DIRECTLY TO THE GITHUB ACTION PAGE
           cat summary.txt >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Result
