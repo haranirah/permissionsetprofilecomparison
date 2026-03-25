@@ -75,20 +75,20 @@ jobs:
           }
 
           /allow(Create|Edit|Delete|Read)/ {
-            if ($0 ~ /^\+/) {
-              orgLine=$0
+            if ($0 ~ /^-/) {
+              branchLine=$0
               getline nextLine
 
-              if (nextLine ~ /^-/) {
-                branchLine=nextLine
+              if (nextLine ~ /^\+/) {
+                orgLine=nextLine
 
-                org=orgLine
                 branch=branchLine
+                org=orgLine
 
-                gsub(/.*<|>.*/, "", org)
                 gsub(/.*<|>.*/, "", branch)
+                gsub(/.*<|>.*/, "", org)
 
-                perm=$0
+                perm=branchLine
                 gsub(/.*<|>.*/, "", perm)
 
                 if (org != branch) {
