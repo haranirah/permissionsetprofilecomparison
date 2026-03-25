@@ -1,14 +1,14 @@
-name: Compare Profile/PermissionSet (AI)
+name: Compare Specific Profile/PermissionSet (AI Enhanced)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch name"
+        description: "Enter branch name"
         required: true
         default: "main"
       metadataName:
-        description: "Profile or PermissionSet name"
+        description: "Enter Profile or PermissionSet name"
         required: true
 
 jobs:
@@ -17,73 +17,68 @@ jobs:
 
     steps:
       # 1. Checkout branch
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
       # 2. Setup Node.js
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # 3. Install Salesforce CLI
-      - name: Install CLI
-        run: npm install -g @salesforce/cli
+      - run: npm install -g @salesforce/cli
 
-      # 4. Authenticate org
+      # 4. Authenticate Org
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 5. Retrieve metadata
+      # 5. Retrieve Metadata
       - name: Retrieve Metadata
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 6. Locate metadata file
-      - name: Find Metadata File
+      # 6. Locate Metadata File
+      - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
-          PROFILE="force-app/main/default/profiles/$NAME.profile-meta.xml"
-          PS="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
+          PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
+          PS_PATH="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
 
-          if [ -f "$PROFILE" ]; then
-            echo "FILE_PATH=$PROFILE" >> $GITHUB_ENV
-          elif [ -f "$PS" ]; then
-            echo "FILE_PATH=$PS" >> $GITHUB_ENV
+          if [ -f "$PROFILE_PATH" ]; then
+            echo "FILE_PATH=$PROFILE_PATH" >> $GITHUB_ENV
+          elif [ -f "$PS_PATH" ]; then
+            echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
             echo "File not found!"
             exit 1
-          fi
 
-      # 7. Generate git diff
-      - name: Git Diff
+      # 7. Generate Diff
+      - name: Generate Diff
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
-
           echo "==== RAW DIFF ===="
           cat diff.txt
 
-      # 8. Extract clean data
-      - name: Parse Diff
+      # 8. Extract Clean Data using AWK
+      - name: Prepare Clean Data
         run: |
           awk -f parse-diff.awk diff.txt > clean.txt
-
           echo "==== CLEAN DATA ===="
           cat clean.txt
 
+          # Prevent empty file issue
           if [ ! -s clean.txt ]; then
             echo "No permission changes found." > clean.txt
           fi
 
-      # 9. AI Summary
+      # 9. AI Summary (summary + impact only)
       - name: AI Summary
         run: |
           jq -n \
@@ -108,29 +103,33 @@ jobs:
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 10. Extract output
+      # 10. Extract Output and combine clean diff + AI summary
       - name: Extract Summary
         run: |
           CONTENT=$(jq -r '.choices[0].message.content // empty' ai-response.json)
 
           if [ -z "$CONTENT" ]; then
-            echo "⚠️ AI failed, using clean data"
-            cp clean.txt summary.txt
+            echo "⚠️ AI failed, using clean data" > ai-summary.txt
           else
-            echo "$CONTENT" > summary.txt
+            echo "$CONTENT" > ai-summary.txt
           fi
+
+          # Combine clean diff + AI summary
+          cat clean.txt > summary.txt
+          echo "" >> summary.txt
+          cat ai-summary.txt >> summary.txt
 
           echo "==== FINAL OUTPUT ===="
           cat summary.txt
 
+          # Append to GitHub workflow step summary
           echo "## ✨ Permission Comparison" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat summary.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      # 11. Upload summary
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      # 11. Upload result
+      - uses: actions/upload-artifact@v4
         with:
           name: ai-summary
           path: summary.txt
