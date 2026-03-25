@@ -65,76 +65,61 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 8. Extract Clean Data (ORG ➜ BRANCH)
+          echo "==== RAW DIFF ===="
+          cat diff.txt
+
+      # 8. Extract Clean Data using AWK FILE (FIXED)
       - name: Prepare Clean Data
         run: |
-          awk '
-          /<object>/ {
-            obj=$0
-            gsub(/.*<|>.*/, "", obj)
-          }
-
-          /allow(Create|Edit|Delete|Read)/ {
-            if ($0 ~ /^\+/) {
-              orgLine=$0
-              getline nextLine
-
-              if (nextLine ~ /^-/) {
-                branchLine=nextLine
-
-                orgVal=orgLine
-                branchVal=branchLine
-
-                gsub(/.*<|>.*/, "", orgVal)
-                gsub(/.*<|>.*/, "", branchVal)
-
-                perm=orgLine
-                gsub(/.*<|>.*/, "", perm)
-
-                if (orgVal != branchVal) {
-                  print "Object: " obj
-                  print "  • " perm " : " orgVal " ➜ " branchVal
-                }
-              }
-            }
-          }' diff.txt > clean.txt
+          awk -f parse-diff.awk diff.txt > clean.txt
 
           echo "==== CLEAN DATA ===="
           cat clean.txt
 
-      # 9. AI Formatting (STRICT - NO HALLUCINATION)
+          # Prevent empty file issue
+          if [ ! -s clean.txt ]; then
+            echo "No permission changes found." > clean.txt
+          fi
+
+      # 9. AI Formatting (SAFE + DEBUG)
       - name: AI Summary
         run: |
           jq -n \
             --arg data "$(cat clean.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 250,
+              "max_tokens": 200,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a strict formatter. Do NOT invent, assume, or add any data."
+                  "content": "You are a strict formatter. Do NOT invent any data."
                 },
                 {
                   "role": "user",
-                  "content": "STRICT RULES:\n- Use ONLY provided data\n- DO NOT add objects, fields, or users\n- DO NOT modify values\n- DO NOT hallucinate\n\nTASK:\n1. Format clearly\n2. Add short summary\n3. Add simple impact\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n<exact data>\n\n=== 📌 SUMMARY ===\n<based only on given data>\n\n=== ⚠️ IMPACT ===\n<generic impact>\n\nDATA:\n\($data)"
+                  "content": "Format the following Salesforce permission changes.\n\nRULES:\n- Use ONLY given data\n- Do NOT modify values\n\nAdd:\n1. Summary (1 line)\n2. Impact (1 line)\n\nDATA:\n\($data)"
                 }
               ]
             }' > payload.json
+
+          echo "==== PAYLOAD ===="
+          cat payload.json
 
           curl https://openrouter.ai/api/v1/chat/completions \
             -H "Authorization: Bearer ${{ secrets.OPENROUTER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 10. Extract Output (Safe Fallback)
+          echo "==== AI RESPONSE ===="
+          cat ai-response.json
+
+      # 10. Extract Output (FIXED FALLBACK)
       - name: Extract Summary
         run: |
-          CONTENT=$(cat ai-response.json | jq -r '.choices[0].message.content // empty')
+          CONTENT=$(jq -r '.choices[0].message.content // empty' ai-response.json)
 
           if [ -z "$CONTENT" ]; then
-            echo "AI failed, using clean data"
-            cat clean.txt > summary.txt
+            echo "⚠️ AI failed, using clean data"
+            cp clean.txt summary.txt
           else
             echo "$CONTENT" > summary.txt
           fi
