@@ -1,4 +1,4 @@
-name: Compare Specific Profile/PermissionSet (AI)
+name: Compare Specific Profile/PermissionSet (AI Enhanced)
 
 on:
   workflow_dispatch:
@@ -16,23 +16,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout selected branch
-      - name: Checkout Branch
-        uses: actions/checkout@v4
+      # 1. Checkout
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Setup Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      # 2. Setup Node
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 3. Install Salesforce CLI
-      - name: Install CLI
-        run: npm install -g @salesforce/cli
+      # 3. Install CLI
+      - run: npm install -g @salesforce/cli
 
-      # 4. Authenticate Org
+      # 4. Authenticate
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
@@ -42,18 +39,13 @@ jobs:
       - name: Retrieve Metadata
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
-
-          echo "Retrieving Profile..."
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
-
-          echo "Retrieving Permission Set..."
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 6. Locate Metadata File
+      # 6. Locate File
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
-
           PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
           PS_PATH="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
 
@@ -73,20 +65,8 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-          echo "==== RAW DIFF ===="
-          cat diff.txt
-
-      # 8. Filter only important permission lines
-      - name: Filter Important Changes
-        run: |
-          grep -E "allow(Create|Edit|Delete|Read)" diff.txt > filtered.txt || true
-          head -c 3000 filtered.txt > trimmed.txt
-
-          echo "==== FILTERED DIFF ===="
-          cat trimmed.txt
-
-      # 🔥 9. Convert to ORG ➜ BRANCH (LOGIC FIX - NO AI CONFUSION)
-      - name: Prepare Clean Data
+      # 8. Extract Important Changes
+      - name: Prepare Clean Data (ORG ➜ BRANCH)
         run: |
           awk '
           /allow(Create|Edit|Delete|Read)/ {
@@ -107,22 +87,22 @@ jobs:
           echo "==== CLEAN DATA ===="
           cat clean.txt
 
-      # 🤖 10. AI Formatting (ONLY FORMAT, NO LOGIC)
+      # 9. AI Processing (FORMAT + EXPLANATION)
       - name: AI Summary
         run: |
           jq -n \
-            --arg diff "$(cat clean.txt)" \
+            --arg data "$(cat clean.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 300,
+              "max_tokens": 350,
               "messages": [
                 {
                   "role": "system",
-                  "content": "Format Salesforce permission comparison."
+                  "content": "You are a Salesforce DevOps expert."
                 },
                 {
                   "role": "user",
-                  "content": "Format this clean comparison:\n\nObject: Account\n- Create: false ➜ true\n- Edit: false ➜ true\n- Delete: false ➜ true\n\nKeep it simple and clean.\n\nData:\n\($diff)"
+                  "content": "Convert the following Salesforce permission comparison into a clean and structured format.\n\nRULES:\n- Show permissions clearly\n- Keep it simple and readable\n\nThen provide:\n1. SUMMARY (what changed)\n2. IMPACT (business impact)\n3. WHY AI USED (why AI helps in this process)\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n<clean output>\n\n=== 📌 SUMMARY ===\n<1-2 lines>\n\n=== ⚠️ IMPACT ===\n<1 line>\n\n=== 🤖 WHY AI ===\n<1-2 lines explaining automation benefits>\n\nDATA:\n\($data)"
                 }
               ]
             }' > payload.json
@@ -132,7 +112,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 11. Extract Summary (SAFE)
+      # 10. Extract Output
       - name: Extract Summary
         run: |
           CONTENT=$(cat ai-response.json | jq -r '.choices[0].message.content // empty')
@@ -149,9 +129,8 @@ jobs:
 
           cat summary.txt >> $GITHUB_STEP_SUMMARY
 
-      # 12. Upload Result
-      - name: Upload Summary
-        uses: actions/upload-artifact@v4
+      # 11. Upload Result
+      - uses: actions/upload-artifact@v4
         with:
           name: ai-summary
           path: summary.txt
