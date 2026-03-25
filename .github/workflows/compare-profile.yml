@@ -56,7 +56,7 @@ jobs:
           else
             echo "File not found!"
             exit 1
-
+          fi
       # 7. Generate Diff
       - name: Generate Diff
         run: |
