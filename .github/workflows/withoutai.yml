@@ -16,24 +16,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout selected branch
       - name: Checkout Branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
+      # 2. Setup Node.js (Ensures npm global pathing works)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # 3. Install Modern Salesforce CLI
       - name: Install CLI
         run: npm install -g @salesforce/cli
 
+      # 4. Authenticate Org
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
+      # 5. Locate Metadata File in workspace
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -50,26 +55,28 @@ jobs:
             exit 1
           fi
 
-      - name: Backup Branch State and Generate Raw Diff
-        run: |
-          # 1. Back up branch version so we can compare it later
-          cp "$FILE_PATH" branch-backup.xml
+      # 6. Backup Branch State before Salesforce Overwrites it
+      - name: Backup Branch State
+        run: cp "$FILE_PATH" branch-backup.xml
 
-          # 2. Track it for the raw diff
-          git config --global --add safe.directory $GITHUB_WORKSPACE
-          git add -N "$FILE_PATH" || true
-          git diff "$FILE_PATH" > diff.txt
-
+      # 7. Retrieve Live Org State (Overwrites local workspace file)
       - name: Retrieve Live Org State
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
           
-          # Overwrites workspace file with current live state
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
           cp "$FILE_PATH" org-current.xml
 
+      # 8. Generate Raw Git Diff (workspace file [Org] vs branch index)
+      - name: Generate Diff
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git add -N "$FILE_PATH" || true
+          git diff "$FILE_PATH" > diff.txt
+
+      # 9. Run Python Precision Comparison
       - name: Run Python Precision Comparison
         run: |
           cat << 'EOF' > compare.py
@@ -82,7 +89,6 @@ jobs:
               with open(file_path, 'r') as f:
                   content = f.read()
               
-              # Strip SF namespaces
               content = content.replace(' xmlns="http://soap.sforce.com/2006/04/metadata"', '')
               try:
                   root = ET.fromstring(content)
@@ -144,9 +150,10 @@ jobs:
 
           python3 compare.py
 
+      # 10. Print Step Summary to GitHub Action dashboard
       - name: Print Step Summary Page
         run: |
-          echo "## 🔍 Raw Diff" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 Raw Git Diff" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
           cat diff.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
@@ -156,6 +163,7 @@ jobs:
           cat pretty.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
+      # 11. Upload Artifacts to Run
       - uses: actions/upload-artifact@v4
         with:
           name: comparison-output
