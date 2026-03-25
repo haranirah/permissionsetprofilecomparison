@@ -81,22 +81,21 @@ jobs:
         run: |
           head -c 12000 diff.txt > trimmed-diff.txt
 
-      # 9. AI Summary
-      # 8. AI Summary using NVIDIA Nemotron 3 Super
+      # 9. AI Summary using Xiaomi MiMo-V2-Omni (Indentation Fixed)
       - name: AI Summary
         run: |
           jq -n \
             --arg diff "$(cat trimmed-diff.txt)" \
             '{
-              "model": "nvidia/nemotron-3-super-120b-a12b:free",
+              "model": "xiaomi/mimo-v2-omni",
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce Security Expert. Summarize the changes in this diff. Use a bold header if any permissions were DECREASED (Risk: Access Loss) or INCREASED (Risk: Over-privilege)."
+                  "content": "You are a Salesforce expert. Convert metadata diff into a clean, structured comparison output."
                 },
                 {
                   "role": "user",
-                  "content": ("Review this Salesforce metadata diff:\n" + $diff)
+                  "content": "Analyze the Salesforce diff and present it in a clean and visually structured format.\n\nRules:\n- Show comparison first (clean and aligned)\n- Group by object\n- Highlight ONLY changed values\n- Use symbols: ➜ for change\n- Use simple words: Create, Edit, Delete, Read\n- Make it visually clean and easy to scan\n- No unnecessary explanation in comparison section\n\nThen add a small summary at the end.\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n\nObject: <Object Name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n  • Delete  : true ➜ false\n\n(only show changed ones)\n\n=== 📌 SUMMARY ===\n- 1–2 lines explaining what changed in simple words\n\n=== ⚠️ IMPACT ===\n- Short impact statement (1 line)\n\nDiff:\n\($diff)"
                 }
               ]
             }' > payload.json
