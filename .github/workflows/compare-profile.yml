@@ -1,14 +1,14 @@
-name: Compare Specific Profile/PermissionSet (AI Enhanced)
+name: Compare Profile/PermissionSet (AI)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Enter branch name"
+        description: "Branch name"
         required: true
         default: "main"
       metadataName:
-        description: "Enter Profile or PermissionSet name"
+        description: "Profile or PermissionSet name"
         required: true
 
 jobs:
@@ -16,50 +16,53 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout
-      - uses: actions/checkout@v4
+      # 1. Checkout branch
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Setup Node
-      - uses: actions/setup-node@v4
+      # 2. Setup Node.js
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # 3. Install Salesforce CLI
-      - run: npm install -g @salesforce/cli
+      - name: Install CLI
+        run: npm install -g @salesforce/cli
 
-      # 4. Authenticate Org
+      # 4. Authenticate org
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 5. Retrieve Metadata
+      # 5. Retrieve metadata
       - name: Retrieve Metadata
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 6. Locate Metadata File
-      - name: Locate Metadata File
+      # 6. Locate metadata file
+      - name: Find Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
-          PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
-          PS_PATH="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
+          PROFILE="force-app/main/default/profiles/$NAME.profile-meta.xml"
+          PS="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
 
-          if [ -f "$PROFILE_PATH" ]; then
-            echo "FILE_PATH=$PROFILE_PATH" >> $GITHUB_ENV
-          elif [ -f "$PS_PATH" ]; then
-            echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
+          if [ -f "$PROFILE" ]; then
+            echo "FILE_PATH=$PROFILE" >> $GITHUB_ENV
+          elif [ -f "$PS" ]; then
+            echo "FILE_PATH=$PS" >> $GITHUB_ENV
           else
             echo "File not found!"
             exit 1
           fi
 
-      # 7. Generate Diff
-      - name: Generate Diff
+      # 7. Generate git diff
+      - name: Git Diff
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
@@ -68,51 +71,44 @@ jobs:
           echo "==== RAW DIFF ===="
           cat diff.txt
 
-      # 8. Extract Clean Data using AWK FILE (FIXED)
-      - name: Prepare Clean Data
+      # 8. Extract clean data
+      - name: Parse Diff
         run: |
           awk -f parse-diff.awk diff.txt > clean.txt
 
           echo "==== CLEAN DATA ===="
           cat clean.txt
 
-          # Prevent empty file issue
           if [ ! -s clean.txt ]; then
             echo "No permission changes found." > clean.txt
           fi
 
-      # 9. AI Formatting (SAFE + DEBUG)
+      # 9. AI Summary
       - name: AI Summary
         run: |
           jq -n \
             --arg data "$(cat clean.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 200,
+              "max_tokens": 150,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a strict formatter. Do NOT invent any data."
+                  "content": "You are a Salesforce expert."
                 },
                 {
                   "role": "user",
-                  "content": "Format the following Salesforce permission changes.\n\nRULES:\n- Use ONLY given data\n- Do NOT modify values\n\nAdd:\n1. Summary (1 line)\n2. Impact (1 line)\n\nDATA:\n\($data)"
+                  "content": "Based ONLY on the following permission changes, generate:\n1. SUMMARY (1 line)\n2. IMPACT (1 line)\n\nDo NOT repeat or modify the data.\n\nDATA:\n\($data)"
                 }
               ]
             }' > payload.json
-
-          echo "==== PAYLOAD ===="
-          cat payload.json
 
           curl https://openrouter.ai/api/v1/chat/completions \
             -H "Authorization: Bearer ${{ secrets.OPENROUTER_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-          echo "==== AI RESPONSE ===="
-          cat ai-response.json
-
-      # 10. Extract Output (FIXED FALLBACK)
+      # 10. Extract output
       - name: Extract Summary
         run: |
           CONTENT=$(jq -r '.choices[0].message.content // empty' ai-response.json)
@@ -132,8 +128,9 @@ jobs:
           cat summary.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      # 11. Upload Result
-      - uses: actions/upload-artifact@v4
+      # 11. Upload summary
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ai-summary
           path: summary.txt
