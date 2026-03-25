@@ -22,13 +22,13 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Setup Node.js (Ensures npm global pathing works)
+      # 2. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 3. Install Modern Salesforce CLI
+      # 3. Install Salesforce CLI
       - name: Install CLI
         run: npm install -g @salesforce/cli
 
@@ -38,7 +38,7 @@ jobs:
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 5. Locate Metadata File in workspace
+      # 5. Locate Metadata File
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -55,11 +55,11 @@ jobs:
             exit 1
           fi
 
-      # 6. Backup Branch State before Salesforce Overwrites it
+      # 6. Backup Branch State
       - name: Backup Branch State
         run: cp "$FILE_PATH" branch-backup.xml
 
-      # 7. Retrieve Live Org State (Overwrites local workspace file)
+      # 7. Retrieve Org Metadata
       - name: Retrieve Live Org State
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -69,15 +69,15 @@ jobs:
 
           cp "$FILE_PATH" org-current.xml
 
-      # 8. Generate Raw Git Diff (workspace file [Org] vs branch index)
+      # 8. Generate Raw Git Diff
       - name: Generate Diff
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 9. Run Python Precision Comparison
-      - name: Run Python Precision Comparison
+      # 9. Python Precision Comparison
+      - name: Run Python Comparison
         run: |
           cat << 'EOF' > compare.py
           import xml.etree.ElementTree as ET
@@ -86,10 +86,12 @@ jobs:
           def parse_sf_xml(file_path):
               if not os.path.exists(file_path):
                   return {}
+
               with open(file_path, 'r') as f:
                   content = f.read()
-              
+
               content = content.replace(' xmlns="http://soap.sforce.com/2006/04/metadata"', '')
+
               try:
                   root = ET.fromstring(content)
               except Exception:
@@ -117,6 +119,7 @@ jobs:
 
               return perms
 
+          # Load both states
           branch_perms = parse_sf_xml('branch-backup.xml')
           org_perms = parse_sf_xml('org-current.xml')
 
@@ -126,45 +129,50 @@ jobs:
           for key in all_keys:
               b_p = branch_perms.get(key, {})
               o_p = org_perms.get(key, {})
+
               all_p_keys = set(list(b_p.keys()) + list(o_p.keys()))
 
               for p_key in all_p_keys:
                   b_val = b_p.get(p_key, 'N/A')
                   o_val = o_p.get(p_key, 'N/A')
+
                   if b_val != o_val:
                       if key not in changes:
                           changes[key] = []
                       changes[key].append(f"  • {p_key} : {o_val} ➜ {b_val}")
 
+          # Write output
           with open('pretty.txt', 'w') as f:
               f.write("=== 🔍 PERMISSION CHANGES ===\n\n")
+
               if not changes:
                   f.write("No changes found.\n")
               else:
                   for key, logs in sorted(changes.items()):
-                      f.write(f"{key}\n")
+                      f.write(f"🔹 {key}\n")
                       for log in sorted(logs):
                           f.write(f"{log}\n")
-                      f.write("\n")
+                      f.write("--------------------------------------------------\n\n")
           EOF
 
           python3 compare.py
 
-      # 10. Print Step Summary to GitHub Action dashboard
-      - name: Print Step Summary Page
+      # 10. Show in GitHub UI
+      - name: Print Summary
         run: |
           echo "## 🔍 Raw Git Diff" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
           cat diff.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-          echo "## ✨ Clean Human Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "## ✨ Clean Permission Comparison (Org ➜ Branch)" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat pretty.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      # 11. Upload Artifacts to Run
-      - uses: actions/upload-artifact@v4
+      # 11. Upload Artifacts
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
         with:
           name: comparison-output
           path: |
