@@ -42,7 +42,6 @@ jobs:
       - name: Retrieve Metadata
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
-
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
@@ -70,7 +69,7 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 🔥 8. FILTER ONLY IMPORTANT PERMISSIONS (KEY CHANGE)
+      # 8. Filter Important Changes (VERY IMPORTANT FOR FREE AI)
       - name: Filter Important Changes
         run: |
           grep -E "allow(Create|Edit|Delete|Read)" diff.txt > filtered.txt || true
@@ -79,7 +78,7 @@ jobs:
           echo "==== FILTERED DIFF ===="
           cat trimmed.txt
 
-      # 🤖 9. AI SUMMARY (LOW TOKEN SAFE)
+      # 9. AI Summary
       - name: AI Summary
         run: |
           jq -n \
@@ -94,7 +93,7 @@ jobs:
                 },
                 {
                   "role": "user",
-                  "content": "Convert this into clean format:\n\n=== 🔍 PERMISSION CHANGES ===\nObject: <name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n\n=== 📌 SUMMARY ===\n1 short line\n\n=== ⚠️ IMPACT ===\n1 short line\n\nData:\n" + $diff
+                  "content": "Convert this into clean format:\n\n=== 🔍 PERMISSION CHANGES ===\nObject: <name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n  • Delete  : true ➜ false\n\n(only show changed ones)\n\n=== 📌 SUMMARY ===\n1 short line\n\n=== ⚠️ IMPACT ===\n1 short line\n\nData:\n\($diff)"
                 }
               ]
             }' > payload.json
@@ -107,11 +106,12 @@ jobs:
       # 10. Extract Summary
       - name: Extract Summary
         run: |
-          cat ai-response.json | jq -r '.choices[0].message.content // .error.message' > summary.txt
+          cat ai-response.json | jq -r '.choices[0].message.content // .error.message // "Failed to parse AI response."' > summary.txt
 
           echo "==== AI SUMMARY ===="
           cat summary.txt
 
+          # Show in GitHub UI
           cat summary.txt >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Result
