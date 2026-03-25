@@ -26,10 +26,10 @@ jobs:
         with:
           node-version: '20'
 
-      # 3. Install CLI
+      # 3. Install Salesforce CLI
       - run: npm install -g @salesforce/cli
 
-      # 4. Authenticate
+      # 4. Authenticate Org
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
@@ -42,7 +42,7 @@ jobs:
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 6. Locate File
+      # 6. Locate Metadata File
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -65,21 +65,36 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 8. Extract Important Changes
-      - name: Prepare Clean Data (ORG ➜ BRANCH)
+      # 8. Extract Clean Data (ORG ➜ BRANCH)
+      - name: Prepare Clean Data
         run: |
           awk '
+          /<object>/ {
+            obj=$0
+            gsub(/.*<|>.*/, "", obj)
+          }
+
           /allow(Create|Edit|Delete|Read)/ {
             if ($0 ~ /^\+/) {
-              org=$0
+              orgLine=$0
               getline nextLine
+
               if (nextLine ~ /^-/) {
-                branch=nextLine
+                branchLine=nextLine
 
-                gsub(/.*<|>.*/, "", org)
-                gsub(/.*<|>.*/, "", branch)
+                orgVal=orgLine
+                branchVal=branchLine
 
-                print org " ➜ " branch
+                gsub(/.*<|>.*/, "", orgVal)
+                gsub(/.*<|>.*/, "", branchVal)
+
+                perm=orgLine
+                gsub(/.*<|>.*/, "", perm)
+
+                if (orgVal != branchVal) {
+                  print "Object: " obj
+                  print "  • " perm " : " orgVal " ➜ " branchVal
+                }
               }
             }
           }' diff.txt > clean.txt
@@ -87,22 +102,22 @@ jobs:
           echo "==== CLEAN DATA ===="
           cat clean.txt
 
-      # 9. AI Processing (FORMAT + EXPLANATION)
+      # 9. AI Formatting (STRICT - NO HALLUCINATION)
       - name: AI Summary
         run: |
           jq -n \
             --arg data "$(cat clean.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 350,
+              "max_tokens": 250,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce DevOps expert."
+                  "content": "You are a strict formatter. Do NOT invent, assume, or add any data."
                 },
                 {
                   "role": "user",
-                  "content": "Convert the following Salesforce permission comparison into a clean and structured format.\n\nRULES:\n- Show permissions clearly\n- Keep it simple and readable\n\nThen provide:\n1. SUMMARY (what changed)\n2. IMPACT (business impact)\n3. WHY AI USED (why AI helps in this process)\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n<clean output>\n\n=== 📌 SUMMARY ===\n<1-2 lines>\n\n=== ⚠️ IMPACT ===\n<1 line>\n\n=== 🤖 WHY AI ===\n<1-2 lines explaining automation benefits>\n\nDATA:\n\($data)"
+                  "content": "STRICT RULES:\n- Use ONLY provided data\n- DO NOT add objects, fields, or users\n- DO NOT modify values\n- DO NOT hallucinate\n\nTASK:\n1. Format clearly\n2. Add short summary\n3. Add simple impact\n\nFORMAT:\n\n=== 🔍 PERMISSION CHANGES ===\n<exact data>\n\n=== 📌 SUMMARY ===\n<based only on given data>\n\n=== ⚠️ IMPACT ===\n<generic impact>\n\nDATA:\n\($data)"
                 }
               ]
             }' > payload.json
@@ -112,14 +127,14 @@ jobs:
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 10. Extract Output
+      # 10. Extract Output (Safe Fallback)
       - name: Extract Summary
         run: |
           CONTENT=$(cat ai-response.json | jq -r '.choices[0].message.content // empty')
 
           if [ -z "$CONTENT" ]; then
-            echo "AI failed, showing raw response"
-            cat ai-response.json > summary.txt
+            echo "AI failed, using clean data"
+            cat clean.txt > summary.txt
           else
             echo "$CONTENT" > summary.txt
           fi
@@ -127,7 +142,10 @@ jobs:
           echo "==== FINAL OUTPUT ===="
           cat summary.txt
 
+          echo "## ✨ Permission Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat summary.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Result
       - uses: actions/upload-artifact@v4
