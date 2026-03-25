@@ -1,14 +1,14 @@
-name: Compare Profile/PermissionSet (RAW DIFF + CLEAN)
+name: Compare Specific Profile/PermissionSet (Clean RAW)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch name"
+        description: "Enter branch name"
         required: true
         default: "main"
       metadataName:
-        description: "Profile or PermissionSet name"
+        description: "Enter Profile or PermissionSet name"
         required: true
 
 jobs:
@@ -16,28 +16,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Branch
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - run: npm install -g @salesforce/cli
+      - name: Install CLI
+        run: npm install -g @salesforce/cli
 
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      - run: |
-          NAME="${{ github.event.inputs.metadataName }}"
-
-          sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
-          sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
-
-      - run: |
+      - name: Locate Metadata File
+        run: |
           NAME="${{ github.event.inputs.metadataName }}"
 
           PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
@@ -48,63 +46,112 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found!"
+            echo "File not found! Check your spelling."
             exit 1
           fi
 
-      - run: |
+      - name: Backup Branch State and Generate Raw Diff
+        run: |
+          # 1. Back up branch version so we can compare it later
+          cp "$FILE_PATH" branch-backup.xml
+
+          # 2. Track it for the raw diff
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      - name: Show Diff (Raw + Clean)
+      - name: Retrieve Live Org State
+        run: |
+          NAME="${{ github.event.inputs.metadataName }}"
+          
+          # Overwrites workspace file with current live state
+          sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
+          sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
+
+          cp "$FILE_PATH" org-current.xml
+
+      - name: Run Python Precision Comparison
+        run: |
+          cat << 'EOF' > compare.py
+          import xml.etree.ElementTree as ET
+          import os
+
+          def parse_sf_xml(file_path):
+              if not os.path.exists(file_path):
+                  return {}
+              with open(file_path, 'r') as f:
+                  content = f.read()
+              
+              # Strip SF namespaces
+              content = content.replace(' xmlns="http://soap.sforce.com/2006/04/metadata"', '')
+              try:
+                  root = ET.fromstring(content)
+              except Exception:
+                  return {}
+
+              perms = {}
+
+              # Object Permissions
+              for obj_perm in root.findall('objectPermissions'):
+                  obj = obj_perm.findtext('object')
+                  perms[f"Object: {obj}"] = {
+                      'Create': obj_perm.findtext('allowCreate'),
+                      'Read': obj_perm.findtext('allowRead'),
+                      'Edit': obj_perm.findtext('allowEdit'),
+                      'Delete': obj_perm.findtext('allowDelete'),
+                  }
+
+              # Field Permissions
+              for fld_perm in root.findall('fieldPermissions'):
+                  fld = fld_perm.findtext('field')
+                  perms[f"Field: {fld}"] = {
+                      'Read': fld_perm.findtext('readable'),
+                      'Edit': fld_perm.findtext('editable'),
+                  }
+
+              return perms
+
+          branch_perms = parse_sf_xml('branch-backup.xml')
+          org_perms = parse_sf_xml('org-current.xml')
+
+          changes = {}
+          all_keys = set(branch_perms.keys()).union(org_perms.keys())
+
+          for key in all_keys:
+              b_p = branch_perms.get(key, {})
+              o_p = org_perms.get(key, {})
+              all_p_keys = set(list(b_p.keys()) + list(o_p.keys()))
+
+              for p_key in all_p_keys:
+                  b_val = b_p.get(p_key, 'N/A')
+                  o_val = o_p.get(p_key, 'N/A')
+                  if b_val != o_val:
+                      if key not in changes:
+                          changes[key] = []
+                      changes[key].append(f"  • {p_key} : {o_val} ➜ {b_val}")
+
+          with open('pretty.txt', 'w') as f:
+              f.write("=== 🔍 PERMISSION CHANGES ===\n\n")
+              if not changes:
+                  f.write("No changes found.\n")
+              else:
+                  for key, logs in sorted(changes.items()):
+                      f.write(f"{key}\n")
+                      for log in sorted(logs):
+                          f.write(f"{log}\n")
+                      f.write("\n")
+          EOF
+
+          python3 compare.py
+
+      - name: Print Step Summary Page
         run: |
           echo "## 🔍 Raw Diff" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
           cat diff.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-          echo "" > pretty.txt
-          echo "=== 🔍 PERMISSION CHANGES ===" >> pretty.txt
-          echo "" >> pretty.txt
-
-          awk '
-          /<object>/ {
-            obj=$0
-            gsub(/.*<object>|<\/object>.*/, "", obj)
-          }
-
-          /allow(Create|Edit|Delete|Read)/ {
-            if ($0 ~ /^-/) {
-              branchLine=$0
-              getline nextLine
-
-              if (nextLine ~ /^\+/) {
-                orgLine=nextLine
-
-                branch=branchLine
-                org=orgLine
-
-                gsub(/.*<|>.*/, "", branch)
-                gsub(/.*<|>.*/, "", org)
-
-                perm=branchLine
-                gsub(/.*<|>.*/, "", perm)
-
-                if (org != branch) {
-                  printf "Object: %s\n", obj >> "pretty.txt"
-                  printf "  • %s : %s ➜ %s\n", perm, org, branch >> "pretty.txt"
-                }
-              }
-            }
-          }' diff.txt
-
-          echo "" >> pretty.txt
-          echo "=== 📌 SUMMARY ===" >> pretty.txt
-          echo "Permissions differ between Org and Branch." >> pretty.txt
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## ✨ Clean Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "## ✨ Clean Human Comparison" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat pretty.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
