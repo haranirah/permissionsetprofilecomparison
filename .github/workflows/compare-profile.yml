@@ -42,7 +42,11 @@ jobs:
       - name: Retrieve Metadata
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
+
+          echo "Retrieving Profile..."
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
+
+          echo "Retrieving Permission Set..."
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
       # 6. Locate Metadata File
@@ -58,7 +62,7 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found!"
+            echo "File not found! It may not exist in the org."
             exit 1
           fi
 
@@ -69,31 +73,30 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 8. Filter Important Changes (VERY IMPORTANT FOR FREE AI)
-      - name: Filter Important Changes
-        run: |
-          grep -E "allow(Create|Edit|Delete|Read)" diff.txt > filtered.txt || true
-          head -c 5000 filtered.txt > trimmed.txt
+          echo "==== RAW DIFF ===="
+          cat diff.txt
 
-          echo "==== FILTERED DIFF ===="
-          cat trimmed.txt
+      # 8. Trim Diff
+      - name: Trim Diff
+        run: |
+          head -c 12000 diff.txt > trimmed-diff.txt
 
       # 9. AI Summary
+      # 8. AI Summary using NVIDIA Nemotron 3 Super
       - name: AI Summary
         run: |
           jq -n \
-            --arg diff "$(cat trimmed.txt)" \
+            --arg diff "$(cat trimmed-diff.txt)" \
             '{
-              "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 600,
+              "model": "nvidia/nemotron-3-super-120b-a12b:free",
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce expert. Format permission changes clearly."
+                  "content": "You are a Salesforce Security Expert. Summarize the changes in this diff. Use a bold header if any permissions were DECREASED (Risk: Access Loss) or INCREASED (Risk: Over-privilege)."
                 },
                 {
                   "role": "user",
-                  "content": "Convert this into clean format:\n\n=== 🔍 PERMISSION CHANGES ===\nObject: <name>\n  • Create  : true ➜ false\n  • Edit    : true ➜ false\n  • Delete  : true ➜ false\n\n(only show changed ones)\n\n=== 📌 SUMMARY ===\n1 short line\n\n=== ⚠️ IMPACT ===\n1 short line\n\nData:\n\($diff)"
+                  "content": ("Review this Salesforce metadata diff:\n" + $diff)
                 }
               ]
             }' > payload.json
@@ -111,7 +114,7 @@ jobs:
           echo "==== AI SUMMARY ===="
           cat summary.txt
 
-          # Show in GitHub UI
+          # THIS LINE PRINTS IT DIRECTLY TO THE GITHUB ACTION PAGE
           cat summary.txt >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Result
