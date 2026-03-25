@@ -91,11 +91,11 @@ jobs:
               "messages": [
                 {
                   "role": "system",
-                  "content": "Format Salesforce permission changes."
+                  "content": "You are a Salesforce expert."
                 },
                 {
                   "role": "user",
-                  "content": "Convert this into clean comparison:\n\nObject: Account\n- Create: true ➜ false\n- Edit: true ➜ false\n\nOnly show changed values.\n\nDiff:\n\($diff)"
+                  "content": "This is a Salesforce metadata diff.\n\nIMPORTANT RULES:\n- '-' = BRANCH value\n- '+' = ORG value\n- Output must be: ORG ➜ BRANCH\n- Always show: (+ value ➜ - value)\n\nFORMAT:\n\nObject: <Object Name>\n- Create: false ➜ true\n- Edit: false ➜ true\n- Delete: false ➜ true\n\nOnly show changed values.\nKeep it clean and simple.\n\nDiff:\n\($diff)"
                 }
               ]
             }' > payload.json
