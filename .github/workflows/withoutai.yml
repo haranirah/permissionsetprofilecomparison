@@ -1,14 +1,14 @@
-name: Compare Profile/PermissionSet (RAW DIFF)
+name: Compare Profile/PermissionSet (RAW DIFF + CLEAN)
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Enter branch name"
+        description: "Branch name"
         required: true
         default: "main"
       metadataName:
-        description: "Enter Profile or PermissionSet name"
+        description: "Profile or PermissionSet name"
         required: true
 
 jobs:
@@ -16,42 +16,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout branch
-      - name: Checkout Branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      # 2. Setup Node
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 3. Install Salesforce CLI
-      - name: Install CLI
-        run: npm install -g @salesforce/cli
+      - run: npm install -g @salesforce/cli
 
-      # 4. Authenticate Org
       - name: Authenticate Org
         run: |
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 5. Retrieve Metadata
-      - name: Retrieve Metadata
-        run: |
+      - run: |
           NAME="${{ github.event.inputs.metadataName }}"
 
-          echo "Retrieving Profile..."
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
-
-          echo "Retrieving Permission Set..."
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 6. Locate Metadata File
-      - name: Locate Metadata File
-        run: |
+      - run: |
           NAME="${{ github.event.inputs.metadataName }}"
 
           PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
@@ -66,27 +52,66 @@ jobs:
             exit 1
           fi
 
-      # 7. Generate Diff
-      - name: Generate Diff
-        run: |
+      - run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-          echo "==== RAW DIFF ===="
-          cat diff.txt
-
-      # 8. Show Diff in GitHub UI
-      - name: Show Diff
+      - name: Show Diff (Raw + Clean)
         run: |
-          echo "## 🔍 Metadata Difference" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 Raw Diff" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
           cat diff.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      # 9. Upload Diff File
-      - name: Upload Diff
-        uses: actions/upload-artifact@v4
+          echo "" > pretty.txt
+          echo "=== 🔍 PERMISSION CHANGES ===" >> pretty.txt
+          echo "" >> pretty.txt
+
+          awk '
+          /<object>/ {
+            obj=$0
+            gsub(/.*<object>|<\/object>.*/, "", obj)
+          }
+
+          /allow(Create|Edit|Delete|Read)/ {
+            if ($0 ~ /^\+/) {
+              orgLine=$0
+              getline nextLine
+
+              if (nextLine ~ /^-/) {
+                branchLine=nextLine
+
+                org=orgLine
+                branch=branchLine
+
+                gsub(/.*<|>.*/, "", org)
+                gsub(/.*<|>.*/, "", branch)
+
+                perm=$0
+                gsub(/.*<|>.*/, "", perm)
+
+                if (org != branch) {
+                  printf "Object: %s\n", obj >> "pretty.txt"
+                  printf "  • %s : %s ➜ %s\n", perm, org, branch >> "pretty.txt"
+                }
+              }
+            }
+          }' diff.txt
+
+          echo "" >> pretty.txt
+          echo "=== 📌 SUMMARY ===" >> pretty.txt
+          echo "Permissions differ between Org and Branch." >> pretty.txt
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ✨ Clean Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat pretty.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: raw-diff
-          path: diff.txt
+          name: comparison-output
+          path: |
+            diff.txt
+            pretty.txt
