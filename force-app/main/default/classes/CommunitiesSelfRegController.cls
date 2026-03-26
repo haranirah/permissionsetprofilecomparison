@@ -1,4 +1,4 @@
-/**
+/***
  * An apex page controller that supports self registration of users in communities that allow self registration
  */
 public class CommunitiesSelfRegController {
@@ -55,7 +55,7 @@ public class CommunitiesSelfRegController {
             }
             
             // This message is used for debugging. Do not display this in the UI to the end user.
-            // It has the information around why the user creation failed.
+            // It has the information around why the user creation failed...
             System.debug(ex.getMessage());
         }
         
