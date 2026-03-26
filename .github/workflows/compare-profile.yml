@@ -1,4 +1,4 @@
-name: Compare Specific Profile/PermissionSet (AI Enhanced)
+name: Compare Specific Profile/PermissionSet (Full Diff)
 
 on:
   workflow_dispatch:
@@ -16,18 +16,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout branch
-      - uses: actions/checkout@v4
+      # 1. Checkout selected branch
+      - name: Checkout Branch
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
       # 2. Setup Node.js
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # 3. Install Salesforce CLI
-      - run: npm install -g @salesforce/cli
+      - name: Install CLI
+        run: npm install -g @salesforce/cli
 
       # 4. Authenticate Org
       - name: Authenticate Org
@@ -35,10 +38,11 @@ jobs:
           echo "${{ secrets.SFDX_AUTH_URL }}" > auth.txt
           sf org login sfdx-url --sfdx-url-file auth.txt --alias targetOrg
 
-      # 5. Locate Metadata File (Moved up so we can capture branch backup!)
+      # 5. Locate Metadata File
       - name: Locate Metadata File
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
+
           PROFILE_PATH="force-app/main/default/profiles/$NAME.profile-meta.xml"
           PS_PATH="force-app/main/default/permissionsets/$NAME.permissionset-meta.xml"
 
@@ -47,44 +51,79 @@ jobs:
           elif [ -f "$PS_PATH" ]; then
             echo "FILE_PATH=$PS_PATH" >> $GITHUB_ENV
           else
-            echo "File not found!"
+            echo "File not found! Check your spelling."
             exit 1
           fi
 
-      # 6. Backup Branch State before Salesforce Overwrites it
+      # 6. Backup Branch State
       - name: Backup Branch State
         run: cp "$FILE_PATH" branch-backup.xml
 
-      # 7. Retrieve Metadata from Salesforce (Overwrites workspace)
-      - name: Retrieve Metadata
+      # 7. Retrieve Org Metadata (Overwrites local workspace)
+      - name: Retrieve Live Org State
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
+          
           sf project retrieve start -m "Profile:$NAME" -o targetOrg || true
           sf project retrieve start -m "PermissionSet:$NAME" -o targetOrg || true
 
-      # 8. Generate Raw Diff (For standard logging)
+          cp "$FILE_PATH" org-current.xml
+
+      # 8. Generate Raw Git Diff
       - name: Generate Diff
         run: |
           git config --global --add safe.directory $GITHUB_WORKSPACE
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
-          echo "==== RAW DIFF ===="
-          cat diff.txt
 
-      # 9. Extract Clean Data using Native Python XML (Deterministic and Precise)
-      - name: Prepare Clean Data
+      # 9. Dynamic Python Comparison (Covers EVERYTHING like VS Code)
+      - name: Run Python Comparison
         run: |
           cat << 'EOF' > compare.py
           import xml.etree.ElementTree as ET
           import os
 
+          # Map every standard Salesforce metadata block to its unique identifying sub-tag
+          TAG_MAP = {
+              'objectPermissions': 'object',
+              'fieldPermissions': 'field',
+              'classAccesses': 'apexClass',
+              'pageAccesses': 'apexPage',
+              'userPermissions': 'name',
+              'recordTypeVisibilities': 'recordType',
+              'tabVisibilities': 'tab',
+              'applicationVisibilities': 'application',
+              'customPermissions': 'name',
+              'externalDataSourceAccesses': 'externalDataSource',
+              'customMetadataTypeAccesses': 'customMetadataType',
+              'customSettingAccesses': 'customSetting'
+          }
+
+          # Clean display labels
+          TYPE_LABELS = {
+              'objectPermissions': 'Object',
+              'fieldPermissions': 'Field',
+              'classAccesses': 'Apex Class',
+              'pageAccesses': 'Visualforce Page',
+              'userPermissions': 'System/User Permission',
+              'recordTypeVisibilities': 'Record Type',
+              'tabVisibilities': 'Tab Visibility',
+              'applicationVisibilities': 'App visibility',
+              'customPermissions': 'Custom Permission',
+              'externalDataSourceAccesses': 'External Data Source',
+              'customMetadataTypeAccesses': 'Custom Metadata',
+              'customSettingAccesses': 'Custom Setting'
+          }
+
           def parse_sf_xml(file_path):
               if not os.path.exists(file_path):
                   return {}
+
               with open(file_path, 'r') as f:
                   content = f.read()
-              
+
               content = content.replace(' xmlns="http://soap.sforce.com/2006/04/metadata"', '')
+
               try:
                   root = ET.fromstring(content)
               except Exception:
@@ -92,28 +131,30 @@ jobs:
 
               perms = {}
 
-              # Object Permissions
-              for obj_perm in root.findall('objectPermissions'):
-                  obj = obj_perm.findtext('object')
-                  perms[f"Object: {obj}"] = {
-                      'Create': obj_perm.findtext('allowCreate'),
-                      'Read': obj_perm.findtext('allowRead'),
-                      'Edit': obj_perm.findtext('allowEdit'),
-                      'Delete': obj_perm.findtext('allowDelete'),
-                  }
+              for child in root:
+                  tag = child.tag
+                  if tag in TAG_MAP:
+                      id_tag = TAG_MAP[tag]
+                      label = TYPE_LABELS.get(tag, tag)
+                      
+                      id_val = child.findtext(id_tag)
+                      if not id_val:
+                          continue
 
-              # Field Permissions
-              for fld_perm in root.findall('fieldPermissions'):
-                  fld = fld_perm.findtext('field')
-                  perms[f"Field: {fld}"] = {
-                      'Read': fld_perm.findtext('readable'),
-                      'Edit': fld_perm.findtext('editable'),
-                  }
+                      key = f"{label}: {id_val}"
+                      
+                      if key not in perms:
+                          perms[key] = {}
+
+                      # Map boolean values (Read, Edit, Enabled, visible etc.)
+                      for sub_child in child:
+                          if sub_child.tag != id_tag:
+                              perms[key][sub_child.tag] = sub_child.text
 
               return perms
 
           branch_perms = parse_sf_xml('branch-backup.xml')
-          org_perms = parse_sf_xml('org-current.xml') # Workspace was overwritten by retrieve
+          org_perms = parse_sf_xml('org-current.xml')
 
           changes = {}
           all_keys = set(branch_perms.keys()).union(org_perms.keys())
@@ -121,48 +162,46 @@ jobs:
           for key in all_keys:
               b_p = branch_perms.get(key, {})
               o_p = org_perms.get(key, {})
+
               all_p_keys = set(list(b_p.keys()) + list(o_p.keys()))
 
               for p_key in all_p_keys:
                   b_val = b_p.get(p_key, 'N/A')
                   o_val = o_p.get(p_key, 'N/A')
+
                   if b_val != o_val:
                       if key not in changes:
                           changes[key] = []
                       changes[key].append(f"  • {p_key} : {o_val} ➜ {b_val}")
 
-          with open('clean.txt', 'w') as f:
-              f.write("=== 🔍 PERMISSION CHANGES ===\n\n")
+          with open('pretty.txt', 'w') as f:
               if not changes:
                   f.write("No changes found.\n")
               else:
                   for key, logs in sorted(changes.items()):
-                      f.write(f"{key}\n")
+                      f.write(f"🔹 {key}\n")
                       for log in sorted(logs):
                           f.write(f"{log}\n")
-                      f.write("\n")
+                      f.write("--------------------------------------------------\n\n")
           EOF
 
           python3 compare.py
-          echo "==== CLEAN DATA ===="
-          cat clean.txt
 
-      # 10. AI Summary (Generates summary + impact only based on python data)
-      - name: AI Summary
+      # 10. AI Summary (Generates exactly 2 lines summarizing the above visual output)
+      - name: AI Synthesis
         run: |
           jq -n \
-            --arg data "$(cat clean.txt)" \
+            --arg data "$(cat pretty.txt)" \
             '{
               "model": "xiaomi/mimo-v2-omni",
-              "max_tokens": 150,
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a Salesforce expert expert in reading plain text permission change logs."
+                  "content": "You are a Salesforce Security architect."
                 },
                 {
                   "role": "user",
-                  "content": ("Based ONLY on the following permission changes, generate a concise summary and risk impact statement in normal English prose. Do not repeat the data block.\n\nDATA:\n" + $data)
+                  "content": ("Read these permission changes. Provide exactly a 1 sentence Summary and a 1 sentence Risk Impact. Use standard English prose. Do not repeat lists.\n\n" + $data)
                 }
               ]
             }' > payload.json
@@ -172,33 +211,26 @@ jobs:
             -H "Content-Type: application/json" \
             -d @payload.json > ai-response.json
 
-      # 11. Extract Output and combine clean diff + AI summary
-      - name: Extract Summary
+      # 11. Compile Final View
+      - name: Print Summary
         run: |
-          CONTENT=$(jq -r '.choices[0].message.content // empty' ai-response.json)
+          AI_TEXT=$(jq -r '.choices[0].message.content // .error.message // "AI synthesis unavailable."' ai-response.json)
 
-          if [ -z "$CONTENT" ]; then
-            echo "⚠️ AI failed, using clean data" > ai-summary.txt
-          else
-            echo "$CONTENT" > ai-summary.txt
-          fi
+          echo "=== 🔍 PERMISSION CHANGES ===" > summary.txt
+          cat pretty.txt >> summary.txt
+          echo "=== 📌 AI SUMMARY & IMPACT ===" >> summary.txt
+          echo "$AI_TEXT" >> summary.txt
 
-          # Combine clean diff + AI summary
-          cat clean.txt > summary.txt
-          echo "" >> summary.txt
-          cat ai-summary.txt >> summary.txt
-
-          echo "==== FINAL OUTPUT ===="
-          cat summary.txt
-
-          # Append to GitHub workflow step summary
-          echo "## ✨ Permission Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "## ✨ Clean Permission Comparison (Org ➜ Branch)" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat summary.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      # 12. Upload result
-      - uses: actions/upload-artifact@v4
+      # 12. Upload Artifacts
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
         with:
-          name: ai-summary
-          path: summary.txt
+          name: comparison-output
+          path: |
+            diff.txt
+            summary.txt
