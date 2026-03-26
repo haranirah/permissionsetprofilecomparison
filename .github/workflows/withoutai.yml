@@ -59,7 +59,7 @@ jobs:
       - name: Backup Branch State
         run: cp "$FILE_PATH" branch-backup.xml
 
-      # 7. Retrieve Org Metadata
+      # 7. Retrieve Org Metadata (Overwrites workspace)
       - name: Retrieve Live Org State
         run: |
           NAME="${{ github.event.inputs.metadataName }}"
@@ -76,12 +76,44 @@ jobs:
           git add -N "$FILE_PATH" || true
           git diff "$FILE_PATH" > diff.txt
 
-      # 9. Python Precision Comparison
+      # 9. Dynamic Python Comparison (Now tracks everything like VS Code)
       - name: Run Python Comparison
         run: |
           cat << 'EOF' > compare.py
           import xml.etree.ElementTree as ET
           import os
+
+          # Map every standard Salesforce metadata block to its unique identifying sub-tag
+          TAG_MAP = {
+              'objectPermissions': 'object',
+              'fieldPermissions': 'field',
+              'classAccesses': 'apexClass',
+              'pageAccesses': 'apexPage',
+              'userPermissions': 'name',
+              'recordTypeVisibilities': 'recordType',
+              'tabVisibilities': 'tab',
+              'applicationVisibilities': 'application',
+              'customPermissions': 'name',
+              'externalDataSourceAccesses': 'externalDataSource',
+              'customMetadataTypeAccesses': 'customMetadataType',
+              'customSettingAccesses': 'customSetting'
+          }
+
+          # Clean display labels
+          TYPE_LABELS = {
+              'objectPermissions': 'Object',
+              'fieldPermissions': 'Field',
+              'classAccesses': 'Apex Class',
+              'pageAccesses': 'Visualforce Page',
+              'userPermissions': 'System/User Permission',
+              'recordTypeVisibilities': 'Record Type',
+              'tabVisibilities': 'Tab Visibility',
+              'applicationVisibilities': 'App visibility',
+              'customPermissions': 'Custom Permission',
+              'externalDataSourceAccesses': 'External Data Source',
+              'customMetadataTypeAccesses': 'Custom Metadata',
+              'customSettingAccesses': 'Custom Setting'
+          }
 
           def parse_sf_xml(file_path):
               if not os.path.exists(file_path):
@@ -99,27 +131,27 @@ jobs:
 
               perms = {}
 
-              # Object Permissions
-              for obj_perm in root.findall('objectPermissions'):
-                  obj = obj_perm.findtext('object')
-                  perms[f"Object: {obj}"] = {
-                      'Create': obj_perm.findtext('allowCreate'),
-                      'Read': obj_perm.findtext('allowRead'),
-                      'Edit': obj_perm.findtext('allowEdit'),
-                      'Delete': obj_perm.findtext('allowDelete'),
-                  }
+              for child in root:
+                  tag = child.tag
+                  if tag in TAG_MAP:
+                      id_tag = TAG_MAP[tag]
+                      label = TYPE_LABELS.get(tag, tag)
+                      
+                      id_val = child.findtext(id_tag)
+                      if not id_val:
+                          continue
 
-              # Field Permissions
-              for fld_perm in root.findall('fieldPermissions'):
-                  fld = fld_perm.findtext('field')
-                  perms[f"Field: {fld}"] = {
-                      'Read': fld_perm.findtext('readable'),
-                      'Edit': fld_perm.findtext('editable'),
-                  }
+                      key = f"{label}: {id_val}"
+                      
+                      if key not in perms:
+                          perms[key] = {}
+
+                      for sub_child in child:
+                          if sub_child.tag != id_tag:
+                              perms[key][sub_child.tag] = sub_child.text
 
               return perms
 
-          # Load both states
           branch_perms = parse_sf_xml('branch-backup.xml')
           org_perms = parse_sf_xml('org-current.xml')
 
@@ -141,10 +173,8 @@ jobs:
                           changes[key] = []
                       changes[key].append(f"  • {p_key} : {o_val} ➜ {b_val}")
 
-          # Write output
           with open('pretty.txt', 'w') as f:
               f.write("=== 🔍 PERMISSION CHANGES ===\n\n")
-
               if not changes:
                   f.write("No changes found.\n")
               else:
@@ -160,14 +190,14 @@ jobs:
       # 10. Show in GitHub UI
       - name: Print Summary
         run: |
-          echo "## 🔍 Raw Git Diff" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
-          cat diff.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
           echo "## ✨ Clean Permission Comparison (Org ➜ Branch)" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           cat pretty.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🔍 Raw Git Diff" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`diff" >> $GITHUB_STEP_SUMMARY
+          cat diff.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       # 11. Upload Artifacts
